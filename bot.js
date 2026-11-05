@@ -279,7 +279,18 @@ async function playOne(page, n) {
         }
         if (done) break;
       }
-      if (!done) { await page.keyboard.press('Enter'); await page.waitForTimeout(1000); if (!await open()) done = 'Enter'; }
+      // Tablero nuevo: la primera pareja lista ya viene elegida y se confirma con Enter o su botón. Sin parejas listas no hay nada que confirmar.
+      if (!done && await page.evaluate(() => /Listas para la máquina/i.test(document.body.innerText))) {
+        const closes = async () => { for (let i = 0; i < 8; i++) { if (!await open()) return true; await page.waitForTimeout(500); } return false; };
+        await page.waitForTimeout(1500); // Enter justo al abrir no fusionaba
+        await page.keyboard.press('Enter');
+        if (await closes()) done = 'Enter';
+        else {
+          await page.getByText(/^Fusionar en /).last().evaluate(e => e.click()).catch(() => {});
+          if (await closes()) done = 'botón';
+          else await page.screenshot({ path: path.join(__dirname, 'dumps', `fusion-fallida-${Date.now() - t0}.png`) });
+        }
+      }
       if (!done) {
         const labels = await page.locator('.card.fusion').evaluateAll(cs => cs.map(c => (c.classList.contains('locked') ? 'bloqueada:' : 'libre:') + c.innerText.split('\n').slice(0, 2).join(' ')));
         console.log('fusión: cartas vistas', JSON.stringify(labels));
