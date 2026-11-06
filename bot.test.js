@@ -79,3 +79,23 @@ const paid = { kind: 'paid', x: 100, z: 0 };
 assert.strictEqual(pickTarget([paid], [0, 0], { gold: 60, ballPrice: 18 }).kind, 'paid'); // con oro de sobra va lejos
 assert.strictEqual(pickTarget([paid], [0, 0], { gold: 20, ballPrice: 18 }), null); // con justo el precio, solo cerca
 console.log('ok24');
+const { orbitPoint } = require('./bot');
+const op = orbitPoint([12, 0], [0, 0]);
+assert.ok(Math.abs(Math.hypot(...op) - 12) < 1e-9 && op[1] > 0); // sigue en el círculo y avanza
+assert.ok(Math.abs(Math.hypot(...orbitPoint([50, 50], [10, 10])) - Math.hypot(10 + 12 * Math.cos(Math.PI / 4 + 0.6), 10 + 12 * Math.sin(Math.PI / 4 + 0.6))) < 1e-9); // lejos: vuelve al círculo
+console.log('ok25');
+// jefe a 15 u: en la pelea (bossR 10) ya no empuja; fuera de la pelea (22) sí
+const jefe = { player: [0, 0], enemies: [], fwd: [0, 1], target: [0, 50], boss: [0, 15] };
+assert.deepStrictEqual(steer({ ...jefe, bossR: 10 }, 0), ['KeyW']);
+assert.notDeepStrictEqual(steer(jefe, 0), ['KeyW']);
+console.log('ok26');
+// portal pegado al borde (partida real de Nidoran♀): el empuje de la pared no le gana a un objetivo fuerte, pero sí a uno débil
+const borde = { player: [-72, 153], enemies: [], fwd: [0, 1], target: [-84, 157] };
+assert.deepStrictEqual(steer({ ...borde, tw: 1.2 }, 0), ['KeyD']);
+assert.ok(steer({ ...borde, tw: 0.15 }, 0).includes('KeyS'));
+console.log('ok27');
+// nada a menos de 60 u: va al objeto lejano más próximo, pero un objetivo cercano sigue ganando
+const lejos = [{ kind: 'free', x: 100, z: 0 }, { kind: 'altar', x: 90, z: 0 }];
+assert.strictEqual(pickTarget(lejos, [0, 0], { level: 9 }).kind, 'altar');
+assert.strictEqual(pickTarget([...lejos, { kind: 'free', x: 50, z: 0 }], [0, 0], { level: 9 }).x, 50);
+console.log('ok28');

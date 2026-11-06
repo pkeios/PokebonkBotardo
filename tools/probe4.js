@@ -13,7 +13,7 @@ const path = require('path');
   await p.goto('https://pokebonk.com/');
   const jugar = p.getByRole('button', { name: /^Jugar/ }).first();
   await jugar.waitFor({ timeout: 300000 });
-  for (let i = 0; i < 20; i++) { const ok = p.getByRole('button', { name: /^(Entendido|Cerrar|Aceptar|Vale)/ }).first(); if (!await ok.isVisible()) break; await ok.click(); await p.waitForTimeout(800); }
+  for (let i = 0; i < 20; i++) { const ok = p.getByRole('button', { name: /^(Entendido|Cerrar(?! sesión)|Aceptar|Vale)/ }).first(); if (!await ok.isVisible()) break; await ok.click(); await p.waitForTimeout(800); }
   await jugar.click();
   for (let i = 0; i < 3; i++) { await p.waitForTimeout(2500); await p.keyboard.press('Enter'); }
   for (let i = 0; i < 6; i++) {

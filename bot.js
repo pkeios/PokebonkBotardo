@@ -1,28 +1,28 @@
 // Bot para PokéBonk: entra al primer mapa (Bosque Verde, Clásico, Normal), esquiva enemigos y registra cuánto aguanta.
 // Uso: node bot.js [partidas]   (por defecto 1). Resultados en runs.csv
-const { chromium } = require('playwright');
+const { openApp, gameWindow } = require('./app');
 const fs = require('fs');
 const path = require('path');
 
 try { process.loadEnvFile(path.join(__dirname, '.env')); } catch {} // PB_USER y PB_PASS, opcional
 const RUNS = +process.argv[2] || 1;
 const REGION = process.env.BOT_REGION || 'Bosque Verde'; // mapa: Bosque Verde, Desierto Rocoso, Costa Tormenta, Glaciar Celeste
-const BUILD = process.env.BOT_BUILD || ''; // qué priorizar en las cartas: 'dmg', 'area' o 'crit' (vacío: equilibrado)
-const BUILD_RE = { dmg: /daño|velocidad de ataque|recarga|proyectil/i, area: /área|alcance|duración/i, crit: /crítico/i }[BUILD];
+const BUILD = process.env.BOT_BUILD || ''; // qué priorizar en las cartas: 'dmg', 'area', 'crit' o 'rango' (vacío: equilibrado)
+const BUILD_RE = { dmg: /daño|velocidad de ataque|recarga|proyectil/i, area: /área|alcance|duración/i, crit: /crítico/i, rango: /daño|velocidad de ataque|área|alcance|rango(?! de recogida)/i }[BUILD];
 // estilo según el Pokémon (ver evaluate()): radio en el que un enemigo empuja, vida para modo supervivencia, enemigos cerca para soltar el objetivo
-const PROFILE = { name: 'normal', danger: 9, lowHp: 0.4, busyN: 3 };
+const PROFILE = { name: 'normal', danger: 9, lowHp: 0.4, busyN: 8 };
 let DANGER = PROFILE.danger;
 const EDGE = 110; // a partir de aquí tira hacia el centro (el mapa acaba ~165)
 // shortcut: listas por nº de Pokédex vistas en Bosque Verde; otros mapas/eventos pueden traer NPC distintos
 // shortcut: listas de NPC vistas en Bosque Verde; en otros mapas esas especies pueden ser enemigos (p. ej. Meowth en Costa Tormenta)
 const FOREST = REGION === 'Bosque Verde';
-const BONUS = new Set(FOREST ? ['143', '137'] : []); // Snorlax, Porygon: bonificaciones a las que ir
-const NPC = new Set(FOREST ? ['52', '132', '81', '97', '201', ...BONUS] : []); // Meowth (tienda), Ditto, Magnemite, Hypno, Unown (giran en los altares): no son enemigos
+const BONUS = new Set(['143', '137']); // Snorlax, Porygon: bonificaciones a las que ir, en cualquier mapa
+const NPC = new Set([...(FOREST ? ['52'] : []), '132', '81', '97', '201', ...BONUS]); // Meowth (tienda; en otros mapas puede ser enemigo), Ditto, Magnemite, Hypno, Unown (giran en los altares): no son enemigos
 
 const unit = (x, z) => { const n = Math.hypot(x, z) || 1; return [x / n, z / n]; };
 
 // Estado -> teclas WASD relativas a la cámara. Pura, para poder probarla.
-function steer({ player, enemies, fwd, target, walls = [], hp = 1, shots = [], tw = 0.15, boss = null }, t) {
+function steer({ player, enemies, fwd, target, walls = [], hp = 1, shots = [], tw = 0.15, boss = null, bossR = 22 }, t) {
   let x = 0, z = 0;
   const push = ([ex, ez], r, w) => {
     const dx = player[0] - ex, dz = player[1] - ez, d2 = dx * dx + dz * dz;
@@ -31,16 +31,18 @@ function steer({ player, enemies, fwd, target, walls = [], hp = 1, shots = [], t
   if (hp < PROFILE.lowHp && tw < 0.4) target = null; // poca vida: solo sobrevivir (salvo objetivos fuertes como el portal, que es la salida)
   for (const e of enemies) push(e, hp < PROFILE.lowHp ? DANGER * 1.6 : DANGER, 1);
   for (const w of walls) push(w, 8, 3);
-  if (boss) push(boss, 22, 8); // el jefe pega muy fuerte: mucha más distancia
-  // shortcut: proyectiles por color; si hay más de 10 suele ser un efecto propio (Danza Lluvia...) y se ignoran
-  if (shots.length <= 10) for (const s of shots) push(s, 5, 2.5); // proyectiles: más peso que un enemigo
+  if (boss) push(boss, bossR, 8); // el jefe pega muy fuerte: mucha más distancia
+  // shortcut: proyectiles por color. Ignorarlos con más de 10 dejaba pasar los golpes (con >30 balas, 5,5 veces más golpes fuertes): esquivar los 12 más cercanos
+  const d2 = s => (s[0] - player[0]) ** 2 + (s[1] - player[1]) ** 2;
+  for (const s of [...shots].sort((a, b) => d2(a) - d2(b)).slice(0, 12)) push(s, 5, 2.5); // proyectiles: más peso que un enemigo
   const danger = Math.hypot(x, z);
   if (danger > 0.05) [x, z] = [x - 0.6 * z, z + 0.6 * x]; // rodear a la horda en vez de huir recto (solo la parte de esquivar)
   if (target) { const [tx, tz] = unit(target[0] - player[0], target[1] - player[1]); x += tw * tx; z += tw * tz; }
   const r = Math.hypot(...player);
   // empuje hacia el centro cerca del borde (la horda acorrala contra la pared), salvo si el objetivo está también junto al borde;
   // pegado a la pared (>150) empuja fuerte siempre
-  const edgePull = (r > EDGE && !(target && Math.hypot(...target) > EDGE - 10) ? 0.03 * (r - EDGE) : 0) + (r > 150 ? 0.1 * (r - 150) : 0);
+  // (salvo objetivo fuerte junto al borde: con el portal a r=178 el empuje ganaba y Nidoran♀ murió dando vueltas a 15 u de él)
+  const edgePull = (r > EDGE && !(target && Math.hypot(...target) > EDGE - 10) ? 0.03 * (r - EDGE) : 0) + (r > 150 && !(target && tw >= 1 && Math.hypot(...target) > 150) ? 0.1 * (r - 150) : 0);
   if (edgePull) { x -= edgePull * player[0] / r; z -= edgePull * player[1] / r; }
   if (Math.hypot(x, z) < 1e-3) { x = Math.cos(t / 4000); z = Math.sin(t / 4000); } // nada que hacer: pasear en círculo
   const f = unit(...fwd);
@@ -49,6 +51,12 @@ function steer({ player, enemies, fwd, target, walls = [], hp = 1, shots = [], t
   if (along > 0.38) keys.push('KeyW'); if (along < -0.38) keys.push('KeyS');
   if (side > 0.38) keys.push('KeyD'); if (side < -0.38) keys.push('KeyA');
   return keys;
+}
+
+// Siguiente punto para dar vueltas alrededor de center a distancia r: 0.6 rad más adelante en el círculo.
+function orbitPoint(player, center, r = 12) {
+  const a = Math.atan2(player[1] - center[1], player[0] - center[0]) + 0.6;
+  return [center[0] + r * Math.cos(a), center[1] + r * Math.sin(a)];
 }
 
 // Elige objetivo: fusionador (con 2+ habilidades MAX) > Poké Ball azul gratis > altar > NPC de bonificación > Poké Ball de pago si alcanza el oro.
@@ -61,18 +69,19 @@ function pickTarget(targets, player, { maxCount = 0, gold = 0, ballPrice = Infin
     capture: hp >= 0.4 ? -120 : null, // Pokémon marcado para capturar: dura poco, va antes que el fusionador
     paid: gold >= ballPrice * 3 ? 1 : gold >= ballPrice ? 4 : null }; // con oro de sobra, como una gratis
   const rich = gold >= ballPrice * 3;
-  let best = null, bestScore = Infinity;
+  let best = null, bestScore = Infinity, far = null, farD = Infinity; // far: si no hay nada cerca, ir al objeto lejano más próximo en vez de pasear
   for (const t of targets) {
     const p = prio[t.kind];
     if (p == null) continue;
-    if (p > 0 && Math.hypot(t.x - player[0], t.z - player[1]) > (t.kind === 'paid' && rich ? 120 : 60)) continue;
+    const away = Math.hypot(t.x - player[0], t.z - player[1]);
+    if (p > 0 && away > (t.kind === 'paid' && rich ? 120 : 60)) { if (t.kind !== 'paid' && away < farD) far = t, farD = away; continue; }
     if (t.kind === 'capture' && Math.hypot(t.x - player[0], t.z - player[1]) > 80) continue; // no da tiempo a llegar
     if (t.kind === 'heal' && Math.hypot(t.x - player[0], t.z - player[1]) > healRange) continue; // bayas solo si están razonablemente cerca // objetivos normales solo cerca: cruzar el mapa deja atrás la pelea (y la experiencia)
     if (t.kind === 'fusion' && maxCount === 1 && Math.hypot(t.x - player[0], t.z - player[1]) < 30) continue; // ya está cerca: hacer otras cosas por la zona
     const s = p * 30 + Math.hypot(t.x - player[0], t.z - player[1]);
     if (s < bestScore) best = t, bestScore = s;
   }
-  return best;
+  return best || far;
 }
 
 // Flecha del HUD (desplazamiento en pantalla desde el centro + "37 m") -> punto del mundo. Pantalla arriba = adelante de la cámara.
@@ -94,9 +103,9 @@ function evaluate(text) {
   const name = lines.slice(ri + 1, ri + 4).find(l => !/^(Común|Poco común|Raro|Rara|Épico|Épica|Legendari[oa]|Singular|Mítico)$/i.test(l)) || '?';
   const tank = /DEFENSOR|TANQUE|COLOSO/.test(role) || armor >= 40 || hpMax >= 150;
   const fragile = !tank && (/ASALTO|ATACANTE/.test(role) || (hpMax && hpMax < 90) || (armor && armor < 20)); // poca armadura = frágil (p. ej. Tentacool)
-  const p = tank ? { name: 'tanque', danger: 6.5, lowHp: 0.3, busyN: 5 }
-    : fragile ? { name: 'frágil', danger: 11, lowHp: 0.5, busyN: 2 }
-    : { name: 'normal', danger: 9, lowHp: 0.4, busyN: 3 };
+  const p = tank ? { name: 'tanque', danger: 6.5, lowHp: 0.3, busyN: 10 }
+    : fragile ? { name: 'frágil', danger: 11, lowHp: 0.5, busyN: 5 }
+    : { name: 'normal', danger: 9, lowHp: 0.4, busyN: 8 };
   return { pokemon: name, role, hpMax, armor, ...p };
 }
 
@@ -222,9 +231,9 @@ async function playOne(page, n) {
   const seen = new Set(); // avisos ya registrados en DEBUG
   const visited = new Map(), walls = []; // objetivo -> hasta cuándo ignorarlo; puntos donde se atascó
   const hornAt = new Map(), hornBad = new Set(), awake = new Set(); let hornNear = 0, hsLogAt = 0; // cabezas con cuernos vistas / descartadas
-  let capture = null, captures = 0, allies = 0, lastCaught = '', portalSeen = false; // captura en curso, contadores, ¿se vio el portal?
-  let escapeUntil = 0, escapeKeys = [], side = false, prog = {}, cardsAt = 0, fusionSkipUntil = 0, lastReroll = 0, fusionAt = null, guardianAt = null, portalAt = null, guardianWoken = false, wokeAt = 0, wakePos = null, bossSeen = false, zone = '', lastHp = 1, hpAt = 0, lastDash = 0;
-  const SKIP = /maldit|tienda|desafío|hypno|olvid|ditto|grito de/i; // "Grito de X": guardián más fuerte, no // avisos que no se aceptan
+  let capture = null, captures = 0, allies = 0, lastCaught = '', portalSeen = false, portalGo = false, stayAt = 0, calmAt = 0; // captura en curso, contadores, ¿se vio el portal?, ¿ya decidió irse?, desde cuándo se queda, última vez sin horda encima
+  let escapeUntil = 0, escapeKeys = [], side = false, prog = {}, cardsAt = 0, fusionSkipUntil = 0, lastReroll = 0, fusionAt = null, guardianAt = null, portalAt = null, guardianWoken = false, exitTries = 0, exitAt = 0, wokeAt = 0, wakePos = null, bossSeen = false, zone = '', lastHp = 1, hpAt = 0, lastDash = 0;
+  const SKIP = /maldit|tienda|desafío|dojo|hypno|olvid|ditto|grito de/i; // "Grito de X": guardián más fuerte, no // avisos que no se aceptan
   while (true) {
     const st = await page.evaluate(readState);
     if (st.dead) {
@@ -333,7 +342,7 @@ async function playOne(page, n) {
       const key = t => t.kind + Math.round(t.x / 10) + ',' + Math.round(t.z / 10); // bloques de 10: un NPC que se balancea sigue siendo el mismo
       // recordar dónde está el fusionador (lejos puede dejar de dibujarse) para volver cuando haya 2 MAX
       // zona nueva (tras el portal): olvidar todo lo memorizado del mapa anterior
-      if (st.zone && st.zone !== zone) { if (zone) console.log('zona nueva:', st.zone); zone = st.zone; portalSeen = false; visited.clear(); walls.length = 0; fusionAt = guardianAt = portalAt = null; guardianWoken = false; hornAt.clear(); hornBad.clear(); awake.clear(); }
+      if (st.zone && st.zone !== zone) { if (zone) console.log('zona nueva:', st.zone); zone = st.zone; portalSeen = portalGo = false; stayAt = 0; visited.clear(); walls.length = 0; fusionAt = guardianAt = portalAt = null; guardianWoken = false; hornAt.clear(); hornBad.clear(); awake.clear(); }
       // el guardián se localiza por su aviso al pasar cerca; a falta de 40 s se va a despertarlo (y matarlo -> portal)
       if (/guardián/i.test(st.prompt) && !guardianAt) guardianAt = { kind: 'guardian', x: st.player[0], z: st.player[1] }, console.log('guardián en', st.player.map(Math.round).join(','), 'mallas cerca:', st.nearNames.join(' '));
       // flecha del HUD -> punto del mundo (dirección en pantalla + distancia "37 m"); se memoriza por si la flecha desaparece al acercarse
@@ -343,10 +352,11 @@ async function playOne(page, n) {
       const cm = c?.k.match(/^m(\d+)#5af0ff/);
       if (cm) capture = { id: cm[1], ...compassPoint(st.player, st.fwd, c), at: Date.now() };
       if (capture && Date.now() - capture.at > 10000) capture = null;
-      if (capture && !guardianWoken) {
+      const sanct = /Santuario/.test(st.zone);
+      if (capture && (!guardianWoken || sanct)) { // un legendario variocolor debilitado espera su Poké Ball: sin eso, en el Santuario no se sale
         const d = s => Math.hypot(s[0] - capture.x, s[1] - capture.z);
         const s = st.sprites.filter(q => q[2] === capture.id).sort((a, b) => d(a) - d(b))[0];
-        if (s && d(s) < 25) { capture.x = s[0]; capture.z = s[1]; st.enemies = st.enemies.filter(e => e !== s); } // el marcado no ataca
+        if (s && d(s) < 25) { capture.x = s[0]; capture.z = s[1]; if (sanct) capture.at = Date.now(); st.enemies = st.enemies.filter(e => e !== s); } // el marcado no ataca; en pantalla la flecha se oculta
         st.targets.push({ kind: 'capture', x: capture.x, z: capture.z });
       }
       if (st.caught && st.caught !== lastCaught) { if (st.caught === 'liga') captures++; else allies++; capture = null; console.log('atrapado:', st.caught, '· liga', captures, '· aliados', allies); }
@@ -366,7 +376,9 @@ async function playOne(page, n) {
       if (/Santuario/.test(st.zone)) st.timeLeft = 0; // su reloj cuenta hacia arriba y no hay límite: ir ya a tocar el santuario
       // salir hacia el altar según la distancia (~3.5 u/s andando entre la horda) para llegar antes de los 40 s; despertar solo con <=40 s
       const altarD = Math.min(...[...hornAt.values()].filter(h => !hornBad.has(h.k)).map(h => Math.hypot(h.x - st.player[0], h.z - st.player[1])), 999);
-      if (!guardianWoken && st.timeLeft <= 45 + Math.min(altarD, 400) / 2) { // ~2 u/s reales esquivando
+      // la vida del guardián dura ~40/50/60 s de tu daño según la zona (código del juego); +20 s de margen para no acabar en el Enjambre final
+      const wakeAt = /Zona 3/.test(st.zone) ? 80 : /Zona 2/.test(st.zone) ? 70 : 60;
+      if (!guardianWoken && st.timeLeft <= wakeAt + 5 + Math.min(altarD, 400) / 2) { // ~2 u/s reales esquivando
         const cands = [...hornAt.values()].filter(h => !hornBad.has(h.k));
         if (cands.length) st.targets.push(...cands);
         else if (guardianAt) st.targets.push(guardianAt); // sin cabezas conocidas: estimación por la flecha
@@ -377,7 +389,19 @@ async function playOne(page, n) {
       if (!fz && fusionAt) st.targets.push(fusionAt);
       // tras despertar al guardián y con menos del 60% de vida, solo el portal (salir antes de que la cosa se ponga fea)
       // guardián despierto: nada de recoger cosas (distrae y mata); solo esquivar y, cuando aparezca, el portal
-      const pool = guardianWoken ? st.targets.filter(t => t.kind === 'portal' || t.kind === 'heal').concat(portalAt ? [portalAt] : []) : [...st.targets, ...npcs]; // en la pelea: portal o curarse
+      // guardián muerto: quedarse cerca del portal a ver si aguanta las hordas (aunque sea tiempo extra). Irse y no volver con <60% de vida,
+      // si 120+ enemigos siguen encima 4 s (no los mata) o tras 60 s. En el Santuario, salir ya: es la victoria.
+      // el portal del Santuario puede no responder (jefe sin terminar): tras 5 intentos, 45 s a pelear pegado al jefe y se reintenta
+      if (exitTries && Date.now() - exitAt > 45000) exitTries = 0;
+      const exitBlocked = sanct && exitTries >= 5;
+      const portalNow = guardianWoken && !exitBlocked && (st.targets.find(t => t.kind === 'portal') || portalAt);
+      if (st.enemies.filter(e => Math.hypot(e[0] - st.player[0], e[1] - st.player[1]) < 9).length < 120) calmAt = Date.now(); // con 100+ encima la vida aún aguantaba (Nidoran♀); manda sobre todo la vida
+      if (portalNow && !stayAt) stayAt = Date.now();
+      const stay = portalNow && !portalGo && !/Santuario/.test(st.zone) && st.hp >= 0.6 && Date.now() - calmAt < 4000 && Date.now() - stayAt < 60000;
+      if (stay && !portalSeen) console.log('guardián muerto: me quedo con vida', st.hp.toFixed(2), 'a falta de', st.timeLeft, 's');
+      if (portalNow) portalSeen = true;
+      if (portalNow && !stay && !portalGo) portalGo = true, console.log('me voy al portal: vida', st.hp.toFixed(2), 'horda', Date.now() - calmAt >= 4000, 'tras', Math.round((Date.now() - stayAt) / 1000), 's');
+      const pool = stay ? [] : capture && sanct ? st.targets.filter(t => t.kind === 'capture' || t.kind === 'heal') : guardianWoken ? st.targets.filter(t => (t.kind === 'portal' && !exitBlocked) || t.kind === 'heal').concat(portalAt && !exitBlocked ? [portalAt] : []) : [...st.targets, ...npcs]; // en la pelea: portal o curarse
       st.healBelow = guardianWoken ? 0.4 : 0.6; // (curarse hasta el 85% antes del guardián lo desviaba: 1/5) // antes del guardián, casi a tope; peleando, solo en apuro
       st.healRange = guardianWoken ? 30 : 50; // peleando no alejarse del jefe
       const tgt = pickTarget(pool.filter(t => !(visited.get(key(t)) > Date.now())), st.player, st);
@@ -389,13 +413,18 @@ async function playOne(page, n) {
       st.walls = walls;
       DANGER = PROFILE.danger * (st.dominant ? 1.5 : guardianWoken && Date.now() - wokeAt < 30000 ? 1.4 : 1); // guardián o Dominante: más distancia
       if (st.dominant && !['portal', 'guardian'].includes(tgt?.kind)) st.target = null; // con un Dominante suelto, solo sobrevivir
-      st.tw = (tgt?.kind === 'fusion' && st.maxCount >= 2 && st.hp >= 0.5) || (tgt?.kind === 'guardian' && st.hp >= 0.5) || tgt?.kind === 'portal' || (tgt?.kind === 'capture' && st.hp >= 0.5) ? 1.2 : tgt?.kind === 'heal' || tgt?.kind === 'capture' ? 0.4 : tgt?.kind === 'fusion' && st.hp >= 0.6 && PROFILE.name !== 'frágil' ? 0.6 : 0.15; // con 1 MAX se acerca con decisión si hay vida // al fusionador empuja a través de la horda
+      st.tw = (tgt?.kind === 'fusion' && st.maxCount >= 2 && st.hp >= 0.5) || (tgt?.kind === 'guardian' && st.hp >= 0.5) || tgt?.kind === 'portal' || (tgt?.kind === 'capture' && st.hp >= 0.5) ? 1.2 : tgt?.kind === 'heal' || tgt?.kind === 'capture' ? 0.4 : tgt?.kind === 'fusion' && st.hp >= 0.6 && PROFILE.name !== 'frágil' ? 0.6 : ['free', 'altar', 'paid', 'npc'].includes(tgt?.kind) && st.hp >= 0.5 ? 0.6 : 0.15; // con 1 MAX se acerca con decisión si hay vida // al fusionador empuja a través de la horda
+      if (stay) st.target = orbitPoint(st.player, [portalNow.x, portalNow.z]), st.tw = 1.2; // en círculo alrededor de la salida
+      // Código del juego: a más de 18 u durante 2,5 s el guardián salta encima (×1,8, su peor golpe); sus golpes apuntan a donde vas. Girar cerca, sin quedarse quieto
+      const fight = guardianWoken && !portalNow && st.boss && (sanct || Math.hypot(st.boss[0] - st.player[0], st.boss[1] - st.player[1]) < 40); // más lejos no es el guardián, sino otro enemigo grande
+      st.bossR = exitBlocked ? 4 : fight ? 10 : 22;
+      if (fight && !tgt) st.target = orbitPoint(st.player, st.boss, exitBlocked ? 6 : 14), st.tw = st.hp >= PROFILE.lowHp ? 0.8 : 0.3; // con poca vida steer suelta el objetivo y solo esquiva
       const near = r => st.enemies.filter(e => Math.hypot(e[0] - st.player[0], e[1] - st.player[1]) < r).length;
       // en el altar: quieto hasta que salgan las cartas, salvo poca vida o rodeado
       const charging = tgt?.kind === 'altar' && dist < 3 && st.hp >= 0.4 && near(3.5) < 6 && !(st.shots.length && st.shots.length <= 10);
       // al portal, recto: esquivar a 200+ enemigos lo alejaba de 7 a 38 unidades hasta morir (solo se rodean paredes).
       // Al altar del guardián igual si hay vida (con 100% se quedaba a 25 u un minuto); a menos de 12 u espera esquivando hasta poder despertarlo
-      const straight = tgt?.kind === 'portal' || (tgt?.kind === 'guardian' && st.hp >= 0.5 && (dist > 12 || st.timeLeft <= 40));
+      const straight = stay || tgt?.kind === 'portal' || (tgt?.kind === 'guardian' && st.hp >= 0.5 && (dist > 12 || st.timeLeft <= wakeAt));
       let want = charging ? [] : steer(straight ? { ...st, enemies: [], shots: [], boss: null } : st, Date.now());
       // golpe fuerte (-6% vida en <0.5 s): dash en perpendicular a la dirección actual para salir de la ráfaga
       if (!straight && st.hp < lastHp - 0.06 && Date.now() - lastDash > 1200) {
@@ -407,21 +436,22 @@ async function playOne(page, n) {
       if (Date.now() - hpAt > 500) lastHp = st.hp, hpAt = Date.now();
       if (escapeUntil > Date.now()) want = escapeKeys;
       held = await setKeys(page, held, want);
-      if (tgt?.kind === 'portal' && dist > 3 && want.length && Date.now() - lastDash > 1200) await page.keyboard.press('ShiftLeft'), lastDash = Date.now(); // al portal a toda prisa
+      if ((fight || (tgt?.kind === 'portal' && dist > 3)) && want.length && Date.now() - lastDash > 1200) await page.keyboard.press('ShiftLeft'), lastDash = Date.now(); // al portal a toda prisa; en la pelea, deslizarse esquiva los golpes marcados en el suelo
       const crowd = near(DANGER);
       // especial contra hordas, o si pierde mucha vida rápido aunque no vea la horda (Diglett bajo tierra); en recarga no pasa nada
       // especial: se guarda mientras va al guardián (salvo apuro) y se usa en cuanto esté lista los primeros 30 s de la pelea
-      const saving = !guardianWoken && st.timeLeft <= 75 && st.hp >= 0.3, bossFight = (guardianWoken && Date.now() - wokeAt < 30000) || st.dominant;
+      const saving = !guardianWoken && st.timeLeft <= wakeAt + 35 && st.hp >= 0.3, bossFight = (guardianWoken && Date.now() - wokeAt < 30000) || st.dominant;
       if ((bossFight || (!saving && (crowd >= 15 || st.hp < lastHp - 0.1))) && Date.now() - lastUlt > 2000) await page.keyboard.press('KeyR'), lastUlt = Date.now();
       if (process.env.DEBUG && Date.now() % 1000 < 110) { const ids = {}; for (const s of st.sprites) if (Math.hypot(s[0] - st.player[0], s[1] - st.player[1]) < 6) ids[s[2]] = (ids[s[2]] || 0) + 1; console.log('cerca-especies', JSON.stringify(ids)); }
       // aviso "E ..." en pantalla (Poké Ball, Amigo Ball, tótem, máquina): pulsar si es gratis o hay dinero
       const cost = +((st.prompt.match(/(\d+)\s*₽/) || [])[1] || 0);
       // mismo aviso: esperar 3 s antes de repetir (si no, gasta Amigo Balls en serie)
-      if (st.prompt && cost <= st.gold && !SKIP.test(st.prompt) && !(/Máquina de Bill/.test(st.prompt) && (st.maxCount < 2 || Date.now() < fusionSkipUntil)) && !(/Despertar al guardián|Invocar al legendario/i.test(st.prompt) && (st.timeLeft > 40 || (st.hp < 0.6 && st.timeLeft > 10))) && Date.now() - lastE > (st.prompt === lastPrompt && !/portal|Lanzar/i.test(st.prompt) ? 3000 : 400)) {
+      if (st.prompt && cost <= st.gold && !SKIP.test(st.prompt) && !(stay && /portal/i.test(st.prompt)) && !(exitBlocked && /Salir del santuario/.test(st.prompt)) && !(/Máquina de Bill/.test(st.prompt) && (st.maxCount < 2 || Date.now() < fusionSkipUntil)) && !(/Despertar al guardián|Invocar al legendario/i.test(st.prompt) && (st.timeLeft > wakeAt || (st.hp < 0.6 && st.timeLeft > 10))) && Date.now() - lastE > (st.prompt === lastPrompt && !/portal|Lanzar/i.test(st.prompt) ? 3000 : 400)) {
         if (process.env.DEBUG && !seen.has(st.prompt)) seen.add(st.prompt), console.log('aviso', st.prompt, 'dinero', st.gold, 'mallas cerca:', st.nearNames.join(' '));
         await page.keyboard.press('KeyE'); lastE = Date.now(); lastPrompt = st.prompt;
         if (/Despertar a Snorlax/i.test(st.prompt)) awake.add('143'), console.log('Snorlax despierto: ahora es enemigo');
         if (/Despertar al guardián|Invocar al legendario|Tocar el santuario/i.test(st.prompt)) guardianWoken = true, wokeAt = Date.now(), wakePos = st.player.slice(), console.log('guardián despertado a falta de', st.timeLeft, 's con vida', st.hp.toFixed(2));
+        if (/Salir del santuario/.test(st.prompt) && ++exitTries === 5) exitAt = Date.now(), console.log('el portal no responde: voy a por el jefe');
         if (/portal|Salir del santuario/i.test(st.prompt)) console.log('entrando al portal:', st.prompt);
       }
       // en una cabeza con cuernos: si tras 1,5 s el aviso no es del guardián, no era su altar -> descartarla
@@ -435,8 +465,7 @@ async function playOne(page, n) {
         const done = nearSince < Date.now() - wait || cost > st.gold || SKIP.test(st.prompt) || (tgt.kind === 'altar' && cardsAt > nearSince);
         if (done && !['guardian', 'portal', 'capture'].includes(tgt.kind)) visited.set(key(tgt), Date.now() + (cost > st.gold ? 30000 : tgt.kind === 'fusion' ? 120000 : 90000)), nearSince = 0;
       } else nearSince = 0;
-      if (process.env.DEBUG && Date.now() % 3000 < 110) await page.screenshot({ path: path.join(__dirname, 'dumps', `bot${Math.floor((Date.now() - t0) / 1000)}.png`) });
-      if (process.env.DEBUG && Date.now() % 1000 < 110) console.log(st.player.map(v => v.toFixed(1)).join(','), 'cerca', crowd, 'balas', st.shots.length, 'enem', st.enemies.length, 'vida', st.hp.toFixed(2), 'MAX', st.maxCount, 'quedan', st.timeLeft, 'flecha', st.compass ? st.compass.k + ':' + st.compass.d : '-', 'obj', tgt ? tgt.kind + '@' + dist.toFixed(0) : '-', [...held].join('+'));
+      if (process.env.DEBUG && Date.now() % 1000 < 110) console.log(st.player.map(v => v.toFixed(1)).join(','), 'cerca', crowd, 'balas', st.shots.length, 'enem', st.enemies.length, 'vida', st.hp.toFixed(2), 'MAX', st.maxCount, 'quedan', st.timeLeft, 'flecha', st.compass ? st.compass.k + ':' + st.compass.d : '-', 'obj', tgt ? tgt.kind + '@' + dist.toFixed(0) : '-', [...held].join('+'), st.dominant ? 'DOMINANTE' : '', fight ? `jefe ${big?.[2]} t${big?.[3]?.toFixed(1)} d${Math.hypot(st.boss[0] - st.player[0], st.boss[1] - st.player[1]).toFixed(0)}` : '');
       // atascado contra pared/montaña (deslizarse también cuenta): <1.5 unidades en 1.5 s pulsando teclas
       // -> recordar la pared y rodearla en perpendicular (alternando lado) con salto y dash
       if (!last || charging || !held.size) last = st.player, lastMove = Date.now();
@@ -464,15 +493,15 @@ async function playOne(page, n) {
 
 if (require.main === module) (async () => {
   // sin esto Windows marca la ventana como tapada y Chrome deja de pintar: el juego (atado a los fotogramas) va a cámara lenta
-  const ctx = await chromium.launchPersistentContext(path.join(__dirname, 'profile'), { headless: false, viewport: { width: 1280, height: 720 }, args: ['--disable-features=CalculateNativeWinOcclusion', ...(process.env.BOT_SHOW ? [] : ['--window-position=-1260,200'])] }); // casi fuera de pantalla: 20 px visibles para que Chrome siga pintando (BOT_SHOW=1 para verla)
-  const page = ctx.pages()[0] || await ctx.newPage();
-  await page.addInitScript(() => {
+  const app = await openApp();
+  await app.context().addInitScript(() => {
     (window.__THREE_DEVTOOLS__ = new EventTarget()).addEventListener('observe', e => {
       const o = e.detail;
       if (o.render && o.domElement) { const r = o.render; o.render = function (s, c) { if (c?.isPerspectiveCamera) (window.__scenes ||= new Map()).set(s, { c, t: performance.now() }); return r.apply(this, arguments); }; }
     });
   });
-  await page.goto('https://pokebonk.com/');
+  const page = await gameWindow(app);
+  if (!await page.evaluate(() => !!window.__THREE_DEVTOOLS__)) await page.reload(); // cargó antes de poder leer la escena 3D
   console.log('esperando menú principal (si sale el captcha, márcalo tú)...');
   const jugar = page.getByRole('button', { name: /^Jugar/ }).first();
   // sesión caducada: entrar con las credenciales de .env (PB_USER / PB_PASS). El captcha, si sale, lo marca una persona: se muestra la ventana
@@ -488,28 +517,31 @@ if (require.main === module) (async () => {
       console.log('sesión caducada: entrando con .env como', PB_USER);
     } else console.log('sesión caducada y .env sin PB_USER / PB_PASS');
     if (!await jugar.waitFor({ timeout: 20000 }).then(() => true, () => false)) { // captcha o credenciales: hace falta una persona
-      const cdp = await ctx.newCDPSession(page);
-      const { windowId } = await cdp.send('Browser.getWindowForTarget');
-      await cdp.send('Browser.setWindowBounds', { windowId, bounds: { left: 80, top: 40 } });
-      console.log('NECESITO AYUDA: ventana visible, completa el login o el captcha (espero 5 min)');
+      console.log('NECESITO AYUDA: completa el login o el captcha en la app (espero 5 min)');
       await jugar.waitFor({ timeout: 300000 });
     }
   }
   const dismiss = async () => { // avisos (temporada, partida recuperada...) que tapan el menú
     for (let i = 0; i < 20; i++) {
-      const ok = page.getByRole('button', { name: /^(Entendido|Cerrar|Aceptar|Vale)/ }).first();
+      const ok = page.getByRole('button', { name: /^(Entendido|Aceptar|Vale)/ }).or(page.locator('[class*=modal]').getByRole('button', { name: /^Cerrar$/ })).first(); // "Cerrar" solo dentro de un aviso: fuera están "Cerrar sesión" y la X de la ventana
       if (!await ok.isVisible()) break;
-      await ok.click(); await page.waitForTimeout(800);
+      await ok.click({ timeout: 3000 }).catch(() => {}); await page.waitForTimeout(800); // si otro aviso lo tapa, lo resuelve el bucle de abajo
     }
   };
   for (let i = 0; ; i++) { // los avisos pueden aparecer tarde: cerrar y reintentar
     await page.waitForTimeout(1500);
     await dismiss();
+    // ¿Cerrar el juego? (la X o Esc en el menú): siempre cancelar
+    if (await page.getByRole('button', { name: 'Cerrar el juego' }).isVisible().catch(() => false)) await page.getByRole('button', { name: 'Cancelar' }).click({ timeout: 3000 }).catch(() => {});
+    // autoguardado de una partida del bot que se cortó: finalizarla conserva progreso y capturas; sin esto tapa el menú (se confirma con un segundo clic)
+    const cerrada = page.locator('.season-modal', { hasText: 'se cerró de golpe' }).getByRole('button', { name: /Finalizar/ });
+    if (await cerrada.isVisible().catch(() => false)) { console.log('finalizo una partida que se cerró de golpe'); await cerrada.click({ timeout: 3000 }).catch(() => {}); await page.waitForTimeout(600); await cerrada.click({ timeout: 3000 }).catch(() => {}); await page.waitForTimeout(1000); }
     if (await jugar.click({ timeout: 3000 }).then(() => true, () => false)) break;
     // la página puede recargarse sola (actualización del juego): no es un error, se reintenta
     const modal = await page.evaluate(() => [...document.querySelectorAll('[class*=modal]')].find(e => e.offsetParent)?.innerText.slice(0, 200)).catch(() => '(página recargándose)');
     console.log('algo tapa el botón Jugar:', modal?.replace(/\s+/g, ' '));
-    await page.keyboard.press('Escape');
+    await page.screenshot({ path: path.join(__dirname, 'dumps', 'tapa-jugar.png') }).catch(() => {});
+    if (modal) await page.keyboard.press('Escape'); // sin aviso, Esc en el menú abre "¿Cerrar el juego?"
     if (i >= 10) throw new Error('no puedo pulsar Jugar');
   }
   for (let n = 1; n <= RUNS; n++) {
@@ -527,9 +559,9 @@ if (require.main === module) (async () => {
       const ev = evaluate(await page.evaluate(() => document.body.innerText)); // Liga: evaluar al Pokémon seleccionado
       if (process.env.BOT_POKEMON && ev.pokemon !== process.env.BOT_POKEMON) { // jugar con otro falsearía la comparación: mejor perder esta partida
         console.log('ojo: el Pokémon seleccionado es', ev.pokemon, 'y no', process.env.BOT_POKEMON, '· no juego');
-        await ctx.close(); process.exit(1);
+        await app.close(); process.exit(1);
       }
-      const PRESETS = { tanque: { danger: 6.5, lowHp: 0.3, busyN: 5 }, normal: { danger: 9, lowHp: 0.4, busyN: 3 }, 'frágil': { danger: 11, lowHp: 0.5, busyN: 2 } };
+      const PRESETS = { tanque: { danger: 6.5, lowHp: 0.3, busyN: 10 }, normal: { danger: 9, lowHp: 0.4, busyN: 8 }, 'frágil': { danger: 11, lowHp: 0.5, busyN: 5 } };
       if (PRESETS[process.env.BOT_PROFILE]) Object.assign(ev, PRESETS[process.env.BOT_PROFILE], { name: process.env.BOT_PROFILE + ' (forzado)' }); // BOT_PROFILE=normal|tanque|frágil
       Object.assign(PROFILE, { name: ev.name, danger: ev.danger, lowHp: ev.lowHp, busyN: ev.busyN, pokemon: ev.pokemon }); DANGER = ev.danger;
       console.log(`Pokémon: ${ev.pokemon} · rol ${ev.role || '?'} · PS máx ${ev.hpMax || '?'} · armadura ${ev.armor || '?'} -> perfil ${ev.name} (radio ${ev.danger}, huir <${ev.lowHp * 100}% vida, soltar objetivo con ${ev.busyN} cerca)`);
@@ -542,7 +574,7 @@ if (require.main === module) (async () => {
     await page.waitForTimeout(3000);
     await playOne(page, n);
   }
-  await ctx.close();
+  await app.close();
 })();
 
-module.exports = { steer, scoreCard, pickTarget, compassPoint, evaluate };
+module.exports = { steer, scoreCard, pickTarget, compassPoint, evaluate, orbitPoint };

@@ -1,24 +1,23 @@
 # PokéBonk Bot
 
-Bot que juega solo a [PokéBonk](https://pokebonk.com), un survivor 3D de navegador. Abre el juego en Chromium con Playwright, lee el estado de la partida desde la página y responde con teclado: esquiva, junta objetos, sube de nivel, fusiona ataques, captura Pokémon, pelea con los guardianes y cruza portales. Cada partida queda registrada en un CSV para comparar Pokémon y builds.
+Bot que juega solo a [PokéBonk](https://pokebonk.com), un survivor 3D de navegador. Abre la app de escritorio del juego con Playwright, lee el estado de la partida desde la página y responde con teclado: esquiva, junta objetos, sube de nivel, fusiona ataques, captura Pokémon, pelea con los guardianes y cruza portales. Cada partida queda registrada en un CSV para comparar Pokémon y builds.
 
-Se probó sobre todo en **Bosque Verde, modo Clásico, dificultad Normal**. Los demás mapas se pueden elegir, pero están mucho menos probados.
+Se probó sobre todo en **Bosque Verde, modo Clásico, dificultad Normal**, y algo en Desierto Rocoso y Costa Tormenta, donde ganó 2 de 3 partidas con Zapdos. Glaciar Celeste se puede elegir, pero no está probado.
 
 > **Antes de usarlo:** las partidas cuentan en el ranking de la cuenta con la que juegues. Revisá las reglas del juego y usá una cuenta propia. El bot no resuelve captchas: si aparece uno, lo tiene que marcar una persona.
 
 ## Instalación
 
-Hace falta Node.js 20.12 o superior.
+Hace falta Node.js 20.12 o superior y la app de escritorio de PokéBonk instalada.
 
 ```sh
 git clone <url-del-repo>
 cd <carpeta-del-repo>
 npm install
-npx playwright install chromium
 mkdir dumps
 ```
 
-Para que el bot inicie sesión solo, creá un archivo `.env` en la raíz. Es opcional; sin él, iniciás sesión a mano en la ventana del bot.
+Para que el bot inicie sesión solo, creá un archivo `.env` en la raíz. Es opcional; sin él, iniciás sesión a mano en la app.
 
 ```
 PB_USER=tu_usuario
@@ -41,10 +40,10 @@ La configuración se pasa por variables de entorno:
 |---|---|---|
 | `BOT_POKEMON` | Nombre exacto, p. ej. `Onix` | Lo elige en la Liga. Si no logra seleccionarlo, no juega y termina con error. |
 | `BOT_REGION` | `Bosque Verde` (por defecto), `Desierto Rocoso`, `Costa Tormenta`, `Glaciar Celeste` | Mapa. |
-| `BOT_BUILD` | `dmg`, `area`, `crit` | Qué mejoras priorizar en las cartas. Vacío: equilibrado. |
+| `BOT_BUILD` | `dmg`, `area`, `crit`, `rango` | Qué mejoras priorizar en las cartas (`rango`: daño, alcance y velocidad de ataque). Vacío: equilibrado. |
 | `BOT_PROFILE` | `normal`, `tanque`, `frágil` | Fuerza el estilo de juego en vez de deducirlo de las estadísticas. |
-| `DEBUG` | `1` | Muestra el detalle por consola y guarda capturas en `dumps/`. |
-| `BOT_SHOW` | `1` | Muestra la ventana completa en vez de dejarla casi fuera de pantalla. |
+| `DEBUG` | `1` | Muestra el detalle por consola. Las pausas desconocidas guardan siempre una captura en `dumps/`. |
+| `BOT_APP` | Ruta a `PokeBonk.exe` | Solo si la app no está en `%LOCALAPPDATA%ProgramsPokeBonk`. |
 
 Ejemplo:
 
@@ -52,11 +51,11 @@ Ejemplo:
 BOT_POKEMON=Onix BOT_BUILD=crit DEBUG=1 node bot.js 3
 ```
 
-### La ventana del navegador
+### La ventana de la app
 
-Chrome deja de pintar, y el juego casi se congela, si la ventana queda oculta. Por eso se abre en la posición `-1260,200`, con unos 20 px visibles en el borde izquierdo. **No la minimices.** Si tu monitor tiene otra disposición y no se ve, usá `BOT_SHOW=1`.
+El bot abre PokéBonk y lo cierra al terminar, sin modificar sus archivos. **Cerrá la app antes de lanzarlo:** solo admite una ventana abierta. Puede quedar detrás de otras ventanas sin frenarse.
 
-Un solo proceso puede usar `profile/` a la vez: no abras dos bots, ni el bot y `tools/record.js`, al mismo tiempo.
+La sesión es la de la app. `tools/login.js` y `tools/record.js` todavía usan un Chromium aparte con `profile/`.
 
 ## Qué hace durante la partida
 
@@ -72,10 +71,11 @@ Un solo proceso puede usar `profile/` a la vez: no abras dos bots, ni el bot y `
 **Movimiento.** Los enemigos, balas y paredes empujan al personaje, y el objetivo lo atrae. Cuando va al portal, o al altar con al menos 50% de vida, ignora a los enemigos y va recto, porque esquivar a cientos de ellos lo alejaba del objetivo. Si se atasca contra una pared, la recuerda y la rodea.
 
 **Guardián.**
-- Calcula la salida según la distancia al altar y lo despierta cuando faltan 40 segundos o menos.
+- Calcula la salida según la distancia al altar y lo despierta cuando faltan 60, 70 u 80 segundos en las Zonas 1, 2 y 3. Su vida se calcula para durar unos 40, 50 y 60 segundos con tu daño.
 - Con menos de 60% de vida espera, salvo que falten 10 segundos o menos.
-- Una vez despierto, solo esquiva, se cura y entra al portal en cuanto aparece.
-- En el Santuario el reloj cuenta hacia arriba: va directo a tocar el altar central y luego sale por su portal.
+- Una vez despierto, gira a unas 14 unidades del guardián deslizándose, esquiva y se cura hasta que aparece el portal. No se aleja: a más de 18 unidades durante 2,5 segundos, el guardián salta encima.
+- Con el guardián muerto, da vueltas alrededor del portal para aguantar las hordas. Entra de inmediato si baja del 60% de vida, si 120 o más enemigos siguen encima durante 4 segundos, o tras 60 segundos.
+- En el Santuario el reloj cuenta hacia arriba: va directo a tocar el altar central y luego sale por su portal. Si el legendario es variocolor y queda debilitado, le tira la Poké Ball antes de salir. Si el portal no responde tras 5 intentos, vuelve a pelear pegado al jefe 45 segundos y reintenta.
 
 **Subida de nivel.** Concentra mejoras en los ataques más avanzados para llegar a dos al máximo y poder fusionar. Usa "Refrescar" si no hay ninguna mejora útil.
 
@@ -87,7 +87,7 @@ Un solo proceso puede usar `profile/` a la vez: no abras dos bots, ni el bot y `
 | `frágil` | Rol de asalto o atacante, vida < 90 y armadura < 20 | Mantiene más distancia y huye antes |
 | `normal` | El resto | Intermedio |
 
-**Menús y pantallas.** Cierra o resuelve los modales conocidos. Si el reloj se detiene por algo desconocido, va probando teclas y guarda una captura. Ignora a propósito los elementos malditos, la tienda, los desafíos y a Hypno y Ditto.
+**Menús y pantallas.** Cierra o resuelve los modales conocidos. Si el reloj se detiene por algo desconocido, va probando teclas y guarda una captura. Ignora a propósito los elementos malditos, la tienda, los desafíos, el Dojo Karate y a Hypno y Ditto.
 
 ## Cómo lee el juego
 
@@ -115,6 +115,7 @@ Estos datos salen de observar el juego y **pueden cambiar con cada actualizació
 ```sh
 node tools/roster.js   # guarda en dumps/roster.txt los Pokémon de tu Liga
 sh tools/todos.sh 3    # 3 rondas con cada uno
+sh tools/todos.sh 1 mi-lista.txt prueba-   # 1 ronda con otra lista y otra etiqueta de logs
 sh tools/ab.sh 10      # 10 rondas comparando builds con Onix
 ```
 
@@ -138,15 +139,17 @@ Cada partida agrega una fila a `runs.csv`:
 | Archivo | Para qué sirve |
 |---|---|
 | `bot.js` | El bot completo |
+| `app.js` | Abre la app de escritorio y encuentra la ventana del juego |
 | `bot.test.js` | Tests de las funciones puras: movimiento, objetivos, cartas y perfiles |
 | `tools/login.js` | Inicio de sesión manual con `PB_USER` y `PB_PASS` |
 | `tools/roster.js` | Lista los Pokémon disponibles |
-| `tools/todos.sh`, `tools/ab.sh` | Tandas de comparación |
+| `tools/todos.sh`, `tools/siguiente.sh`, `tools/ab.sh` | Tandas de comparación |
 | `tools/record.js` | Graba una sesión jugada por una persona en `dumps/humano/` |
 | `tools/explore.js`, `tools/probe*.js` | Scripts usados para investigar el juego |
 
 ## Limitaciones
 
-- Las especies neutrales (Meowth, Ditto, Magnemite, Hypno, Unown) y las bonificaciones están definidas para Bosque Verde; en otros mapas esas especies pueden ser enemigos.
-- Con poco daño, puede no alcanzar a matar al guardián en los 40 segundos antes del tiempo extra, donde aparecen cientos de enemigos.
-- La victoria en el Santuario se implementó leyendo el código del juego, pero todavía no se comprobó en una partida completa.
+- Las especies neutrales (Ditto, Magnemite, Hypno, Unown, Snorlax, Porygon) se observaron sobre todo en Bosque Verde, y Meowth solo es neutral ahí; en otros mapas alguna puede ser enemiga.
+- En tiempo extra aparecen cientos de enemigos; si el guardián sigue vivo a esa altura, la partida suele terminar ahí.
+- No usa la Grieta (tecla `C`) por su cuenta, aunque sí entra y sale si aparece su portal.
+- Detecta al guardián por tamaño: en tiempo extra puede confundirlo con otro enemigo grande.

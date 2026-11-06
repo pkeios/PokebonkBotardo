@@ -1,18 +1,17 @@
 // Lee de la pantalla de Liga los Pokémon disponibles en la cuenta y los vuelca en dumps/roster.json (más captura e HTML para revisar).
-const { chromium } = require('playwright');
+const { openApp, gameWindow } = require('../app');
 const fs = require('fs');
 const path = require('path');
 const OUT = path.join(__dirname, '..', 'dumps');
 
 (async () => {
-  const ctx = await chromium.launchPersistentContext(path.join(__dirname, '..', 'profile'), { headless: false, viewport: { width: 1280, height: 720 }, args: ['--disable-features=CalculateNativeWinOcclusion', '--window-position=-1260,200'] });
-  const page = ctx.pages()[0] || await ctx.newPage();
-  await page.goto('https://pokebonk.com/');
+  const app = await openApp();
+  const page = await gameWindow(app);
   const jugar = page.getByRole('button', { name: /^Jugar/ }).first();
   await jugar.waitFor({ timeout: 60000 });
   for (let i = 0; i < 10; i++) {
     await page.waitForTimeout(1500);
-    const ok = page.getByRole('button', { name: /^(Entendido|Cerrar|Aceptar|Vale)/ }).first();
+    const ok = page.getByRole('button', { name: /^(Entendido|Aceptar|Vale)/ }).or(page.locator('[class*=modal]').getByRole('button', { name: /^Cerrar$/ })).first();
     if (await ok.isVisible().catch(() => false)) await ok.click().catch(() => {});
     if (await jugar.click({ timeout: 3000 }).then(() => true, () => false)) break;
   }
@@ -28,5 +27,5 @@ const OUT = path.join(__dirname, '..', 'dumps');
   await page.waitForTimeout(1500);
   await page.screenshot({ path: path.join(OUT, 'roster-2.png') });
   console.log('botones', await page.$$eval('button', bs => bs.filter(b => b.offsetParent).map(b => b.innerText.trim().replace(/\s+/g, ' ')).filter(t => t && t.length < 50).join(' | ')));
-  await ctx.close();
+  await app.close();
 })();
