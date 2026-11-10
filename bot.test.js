@@ -63,6 +63,7 @@ console.log('ok18');
 assert.ok(steer({ player: [0, 0], enemies: [], fwd, boss: [0, -10] }, 0).includes('KeyS')); // jefe a 10: alejarse
 console.log('ok19');
 assert.strictEqual(evaluate('#072 · MEDUSA\nTentacool\nPS máx.\n102\nArmadura\n19\n').name, 'frágil'); // poca armadura
+assert.strictEqual(evaluate('#161 · EXPLORADOR\nGen. 2 · Johto\nComún\nSentret\nPS máx.\n95\n').pokemon, 'Sentret'); // la ficha nueva pone la generación
 console.log('ok20');
 assert.strictEqual(pickTarget([{ kind: 'free', x: 5, z: 0 }, { kind: 'heal', x: 50, z: 0 }], [0, 0], { hp: 0.3 }).kind, 'heal'); // poca vida: bayas
 assert.strictEqual(pickTarget([{ kind: 'free', x: 5, z: 0 }, { kind: 'heal', x: 50, z: 0 }], [0, 0], { hp: 0.9 }).kind, 'free'); // vida llena: no
@@ -99,3 +100,27 @@ const lejos = [{ kind: 'free', x: 100, z: 0 }, { kind: 'altar', x: 90, z: 0 }];
 assert.strictEqual(pickTarget(lejos, [0, 0], { level: 9 }).kind, 'altar');
 assert.strictEqual(pickTarget([...lejos, { kind: 'free', x: 50, z: 0 }], [0, 0], { level: 9 }).x, 50);
 console.log('ok28');
+// build exp: Caramelo Exp. le gana a mejorar un ataque (sale de una tanda real); sin la build, al revés
+const exp = "const {scoreCard:c}=require('./bot');console.log(c('NUEVA\\nCaramelo Exp.')>c('MEJORA\\nLlamarada\\nNivel 3 → 4 (máx. 8)'))";
+const run = BOT_BUILD => require('child_process').execFileSync('node', ['-e', exp], { cwd: __dirname, env: { ...process.env, BOT_BUILD } }).toString().trim();
+assert.strictEqual(run('exp'), 'true');
+assert.strictEqual(run('rango'), 'false');
+console.log('ok29');
+const { safeSpot, sectorOf } = require('./bot');
+for (let k = 0; k < 9; k++) assert.strictEqual(sectorOf(...safeSpot([5, 5], [k])), k); // el punto elegido cae en su sector
+assert.strictEqual(sectorOf(...safeSpot([20, 8], [0, 4, 8])), 4); // el más cercano
+assert.strictEqual(sectorOf(0, 3), 8); // centro
+assert.strictEqual(sectorOf(-20, 0), 0); // mismo corte que el juego en ±180°
+console.log('ok30');
+assert.ok(scoreCard('NUEVA En tu plan Lupa') > scoreCard('MEJORA Llamarada Nivel 3 → 4 (máx. 8)')); // la plantilla del jugador gana
+console.log('ok31');
+const { chasePoint } = require('./bot');
+const cp = chasePoint([0, 0], [20, 0]); // detrás de la bestia, a 9 u, del lado del jugador
+assert.ok(Math.abs(cp[0] - 11) < 1e-9 && Math.abs(cp[1]) < 1e-9);
+console.log('ok32');
+const ahead = chasePoint([0, 0], [16, 0], 0, [0, 10]); // corre hacia +z: apuntar por delante
+assert.ok(ahead[1] > 15);
+console.log('ok33');
+const meet = chasePoint([0, 0], [40, 0], 0, [-10, 0]); // viene de frente a 10 u/s: encuentro a 40/18 s
+assert.ok(Math.abs(meet[0] - (40 - 10 * 40 / 18)) < 1e-6);
+console.log('ok34');

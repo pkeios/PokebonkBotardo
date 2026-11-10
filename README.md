@@ -39,11 +39,14 @@ La configuración se pasa por variables de entorno:
 | Variable | Valores | Qué hace |
 |---|---|---|
 | `BOT_POKEMON` | Nombre exacto, p. ej. `Onix` | Lo elige en la Liga. Si no logra seleccionarlo, no juega y termina con error. |
-| `BOT_REGION` | `Bosque Verde` (por defecto), `Desierto Rocoso`, `Costa Tormenta`, `Glaciar Celeste` | Mapa. |
-| `BOT_BUILD` | `dmg`, `area`, `crit`, `rango` | Qué mejoras priorizar en las cartas (`rango`: daño, alcance y velocidad de ataque). Vacío: equilibrado. |
+| `BOT_REGION` | `Bosque Verde` (por defecto), `Desierto Rocoso`, `Costa Tormenta`, `Glaciar Celeste`, `Isla Canela`, `Cueva Celeste`, `Bosque Encina`... | Mapa, si ya está desbloqueado. |
+| `BOT_MODE` | `Clásico` (por defecto), `Supervivencia` | Modo de juego. |
+| `BOT_DIFF` | `Normal` (por defecto), `Difícil`, `Pesadilla` | Dificultad, si ya está desbloqueada. |
+| `BOT_BUILD` | `dmg`, `area`, `crit`, `rango`, `exp` | Qué mejoras priorizar en las cartas (`rango`: daño, alcance y velocidad de ataque; `exp`: experiencia antes que mejorar ataques). Vacío: equilibrado. |
 | `BOT_PROFILE` | `normal`, `tanque`, `frágil` | Fuerza el estilo de juego en vez de deducirlo de las estadísticas. |
 | `DEBUG` | `1` | Muestra el detalle por consola. Las pausas desconocidas guardan siempre una captura en `dumps/`. |
 | `BOT_APP` | Ruta a `PokeBonk.exe` | Solo si la app no está en `%LOCALAPPDATA%ProgramsPokeBonk`. |
+| `BOT_HIDE` | `1` | Juega con la ventana fuera de la pantalla y sin icono en la barra de tareas. Puede verse un instante al abrir. |
 
 Ejemplo:
 
@@ -75,7 +78,7 @@ La sesión es la de la app. `tools/login.js` y `tools/record.js` todavía usan u
 - Con menos de 60% de vida espera, salvo que falten 10 segundos o menos.
 - Una vez despierto, gira a unas 14 unidades del guardián deslizándose, esquiva y se cura hasta que aparece el portal. No se aleja: a más de 18 unidades durante 2,5 segundos, el guardián salta encima.
 - Con el guardián muerto, da vueltas alrededor del portal para aguantar las hordas. Entra de inmediato si baja del 60% de vida, si 120 o más enemigos siguen encima durante 4 segundos, o tras 60 segundos.
-- En el Santuario el reloj cuenta hacia arriba: va directo a tocar el altar central y luego sale por su portal. Si el legendario es variocolor y queda debilitado, le tira la Poké Ball antes de salir. Si el portal no responde tras 5 intentos, vuelve a pelear pegado al jefe 45 segundos y reintenta.
+- En el Santuario el reloj cuenta hacia arriba: va directo a tocar el altar central y luego sale por su portal. Si el legendario es variocolor y queda debilitado, le tira la Poké Ball antes de salir. Si el portal no responde tras 5 intentos, vuelve a pelear pegado al jefe 45 segundos y reintenta. Contra Articuno (Lago Celeste) lee los sectores seguros de Frío Absoluto y corre al más cercano.
 
 **Subida de nivel.** Concentra mejoras en los ataques más avanzados para llegar a dos al máximo y poder fusionar. Usa "Refrescar" si no hay ninguna mejora útil.
 

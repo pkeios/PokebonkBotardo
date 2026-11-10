@@ -7,8 +7,8 @@ const path = require('path');
 try { process.loadEnvFile(path.join(__dirname, '.env')); } catch {} // PB_USER y PB_PASS, opcional
 const RUNS = +process.argv[2] || 1;
 const REGION = process.env.BOT_REGION || 'Bosque Verde'; // mapa: Bosque Verde, Desierto Rocoso, Costa Tormenta, Glaciar Celeste
-const BUILD = process.env.BOT_BUILD || ''; // qué priorizar en las cartas: 'dmg', 'area', 'crit' o 'rango' (vacío: equilibrado)
-const BUILD_RE = { dmg: /daño|velocidad de ataque|recarga|proyectil/i, area: /área|alcance|duración/i, crit: /crítico/i, rango: /daño|velocidad de ataque|área|alcance|rango(?! de recogida)/i }[BUILD];
+const BUILD = process.env.BOT_BUILD || ''; // qué priorizar en las cartas: 'dmg', 'area', 'crit', 'rango' o 'exp' (vacío: equilibrado)
+const BUILD_RE = { dmg: /daño|velocidad de ataque|recarga|proyectil/i, area: /área|alcance|duración/i, crit: /crítico/i, rango: /daño|velocidad de ataque|área|alcance|rango(?! de recogida)/i, exp: /experiencia|Caramelo Exp/i }[BUILD];
 // estilo según el Pokémon (ver evaluate()): radio en el que un enemigo empuja, vida para modo supervivencia, enemigos cerca para soltar el objetivo
 const PROFILE = { name: 'normal', danger: 9, lowHp: 0.4, busyN: 8 };
 let DANGER = PROFILE.danger;
@@ -54,6 +54,26 @@ function steer({ player, enemies, fwd, target, walls = [], hp = 1, shots = [], t
 }
 
 // Siguiente punto para dar vueltas alrededor de center a distancia r: 0.6 rad más adelante en el círculo.
+// Frío Absoluto de Articuno: fuera de los sectores marcados recibe un golpe enorme y queda congelado. Mismas zonas que el juego: 8 cuñas de 45° y el centro (radio 8)
+const sectorOf = (x, z) => Math.hypot(x, z) < 8 ? 8 : Math.floor((Math.atan2(z, x) + Math.PI) / (Math.PI / 4)) % 8;
+function safeSpot([x, z], safe) {
+  const spots = safe.map(k => k === 8 ? [0, 0] : [18 * Math.cos(-Math.PI + (k + 0.5) * Math.PI / 4), 18 * Math.sin(-Math.PI + (k + 0.5) * Math.PI / 4)]);
+  return spots.reduce((b, p) => !b || Math.hypot(p[0] - x, p[1] - z) < Math.hypot(b[0] - x, b[1] - z) ? p : b, null);
+}
+
+// Bestias de Ciudad Iris (Raikou, Entei, Suicune): no atacan; dejan su regalo (el reto de la Liga) tras recibir daño = 45% de su vida, y a menos de 7 u huyen más rápido
+const BEASTS = new Set(['243', '244', '245']);
+// vel: velocidad estimada de la bestia (u/s). Corre a 10 u/s, más que el jugador: hay que cortarle el paso, no ir detrás
+function chasePoint(player, beast, d = 9, vel = [0, 0], speed = 8) {
+  // punto de encuentro: menor t con |bestia + vel·t - jugador| = speed·t (si no hay, apuntar 4 s por delante)
+  const rx = beast[0] - player[0], rz = beast[1] - player[1], A = vel[0] ** 2 + vel[1] ** 2 - speed ** 2, B = 2 * (rx * vel[0] + rz * vel[1]), C = rx ** 2 + rz ** 2;
+  const disc = B * B - 4 * A * C, roots = disc >= 0 && Math.abs(A) > 1e-9 ? [(-B - Math.sqrt(disc)) / (2 * A), (-B + Math.sqrt(disc)) / (2 * A)].filter(x => x > 0) : [];
+  const t = Math.min(6, roots.length ? Math.min(...roots) : 4);
+  const ax = beast[0] + vel[0] * t, az = beast[1] + vel[1] * t;
+  const dx = player[0] - ax, dz = player[1] - az, n = Math.hypot(dx, dz) || 1;
+  return [ax + dx / n * d, az + dz / n * d];
+}
+
 function orbitPoint(player, center, r = 12) {
   const a = Math.atan2(player[1] - center[1], player[0] - center[0]) + 0.6;
   return [center[0] + r * Math.cos(a), center[1] + r * Math.sin(a)];
@@ -100,7 +120,7 @@ function evaluate(text) {
   const hpMax = num(/PS máx\.?\s*\n?\s*(\d+)/), armor = num(/Armadura\s*\n?\s*(\d+)/);
   // nombre: primera línea tras el rol que no sea la rareza
   const lines = text.split('\n').map(l => l.trim()).filter(Boolean), ri = lines.findIndex(l => /#\d+\s*·/.test(l));
-  const name = lines.slice(ri + 1, ri + 4).find(l => !/^(Común|Poco común|Raro|Rara|Épico|Épica|Legendari[oa]|Singular|Mítico)$/i.test(l)) || '?';
+  const name = lines.slice(ri + 1, ri + 4).find(l => !/^Gen\. \d|^(Común|Poco común|Raro|Rara|Épico|Épica|Legendari[oa]|Singular|Mítico)$/i.test(l)) || '?';
   const tank = /DEFENSOR|TANQUE|COLOSO/.test(role) || armor >= 40 || hpMax >= 150;
   const fragile = !tank && (/ASALTO|ATACANTE/.test(role) || (hpMax && hpMax < 90) || (armor && armor < 20)); // poca armadura = frágil (p. ej. Tentacool)
   const p = tank ? { name: 'tanque', danger: 6.5, lowHp: 0.3, busyN: 10 }
@@ -116,9 +136,10 @@ function scoreCard(t) {
   const lv = t.match(/Nivel (\d+) → (\d+) \(máx\. (\d+)\)/);
   if (lv) s += 3 * +lv[1] + (+lv[2] === +lv[3] ? 15 : 0);
   if (/PS|armadura|regeneraci|curaci|escudo|evasi/i.test(t)) s += BUILD_RE ? 2 : 8;
-  if (BUILD_RE?.test(t)) s += 14; // build elegida con BOT_BUILD
+  if (BUILD_RE?.test(t)) s += BUILD === 'exp' ? 60 : 14; // build elegida con BOT_BUILD; exp gana incluso a mejorar un ataque (por eso con 14 nunca salía)
   if (/daño|crítico|proyectil|recarga/i.test(t)) s += 6;
   if (/recogida|experiencia/i.test(t)) s += 4;
+  if (/En tu plan/.test(t)) s += 40; // la plantilla que armó el jugador en el Archivo manda
   if (/dificultad|élites|maldi/i.test(t)) s -= 40;
   if (/no volverá a mejorar/i.test(t)) s -= 20;
   return s + (/Legendari/.test(t) ? 15 : /Épic/.test(t) ? 10 : /Rar/.test(t) ? 5 : 0);
@@ -141,7 +162,7 @@ function readState() {
   const s = window.__main, c = s && window.__scenes.get(s).c;
   const text = document.body.innerText;
   const won = /¡Victoria!/.test(text) && /Otra vez/.test(text); // misma pantalla final que al morir
-  if (won || /¡Te has debilitado!/.test(text)) return { dead: true, won, text };
+  if (won || /¡Te has debilitado!|Has sobrevivido [0-9]/.test(text)) return { dead: true, won, text };
   // cartas de subida de nivel o de altar: cada una lleva su tecla "[1]", "[2]"... -> subir hasta el contenedor de la carta
   const keys = [...document.querySelectorAll('body *')].filter(e => e.offsetParent && !e.children.length && /^\[\d\]$/.test(e.textContent.trim()));
   const cards = keys.map(k => { let e = k; while (e.parentElement && !keys.some(o => o !== k && e.parentElement.contains(o))) e = e.parentElement; return e.innerText; });
@@ -174,7 +195,17 @@ function readState() {
   const mine = pts.some(p => p[3] === myId) ? i => pts[i][3] === myId : () => true;
   const pi = pts.reduce((b, p, i) => mine(i) && (b < 0 || rayDist(p) < rayDist(pts[b])) ? i : b, -1);
   const targets = [], w = o.clone(), hs = []; // hs: alturas de modelo de los objetos interactivos (diagnóstico)
+  let safe = null; // sectores a salvo de Frío Absoluto, mientras está activo
+  // columna de luz de la bestia de Ciudad Iris: se ve de lejos aunque el sprite no; su color dice cuál es
+  const BEAM = { 16769098: '243', 16738858: '244', 7006463: '245' };
+  let beam = null;
+  for (const m of s.children) {
+    if (!m.visible || !m.userData?.mapProp || !m.material?.uniforms) continue;
+    for (const u of Object.values(m.material.uniforms)) if (u?.value?.isColor && BEAM[u.value.getHex()]) beam = [m.position.x, m.position.z, BEAM[u.value.getHex()]];
+  }
   s.traverse(m => {
+    const su = m.material?.uniforms;
+    if (su?.uSafe && su.uOn?.value) safe = [...su.uSafe.value].flatMap((v, k) => v ? [k] : []);
     if (!m.visible) return;
     const lid = m.name === 'Lid' && (m.material.map?.name || '');
     // altura del grupo interactivo al que pertenece la malla (altar normal 3.8; el maldito 4.8 quita vida)
@@ -216,7 +247,7 @@ function readState() {
   // mallas con nombre junto a un aviso: sirve para identificar guardián, portal, etc. en el log
   const nearNames = [];
   if (prompt) s.traverse(m => { if (m.name && m.isMesh && !m.isInstancedMesh) { m.getWorldPosition(w); if (Math.hypot(w.x - pl[0], w.z - pl[2]) < 8) nearNames.push(m.name); } });
-  return { player: [pts[pi][0], pts[pi][2]], me: pts[pi][3], sprites: pts.filter((_, i) => i !== pi).map(p => [p[0], p[2], p[3], p[4]]), fwd: [dir.x, dir.z], targets, prompt, gold, clock, hp, maxCount, ballPrice, shots, level, timeLeft, zone, dominant, caught, nearNames: [...new Set(nearNames)].slice(0, 12), compass, hs };
+  return { player: [pts[pi][0], pts[pi][2]], me: pts[pi][3], sprites: pts.filter((_, i) => i !== pi).map(p => [p[0], p[2], p[3], p[4]]), fwd: [dir.x, dir.z], targets, safe, beam, gift: /te deja un regalo/.test(text), prompt, gold, clock, hp, maxCount, ballPrice, shots, level, timeLeft, zone, dominant, caught, nearNames: [...new Set(nearNames)].slice(0, 12), compass, hs };
 }
 
 async function setKeys(page, held, want) {
@@ -231,7 +262,7 @@ async function playOne(page, n) {
   const seen = new Set(); // avisos ya registrados en DEBUG
   const visited = new Map(), walls = []; // objetivo -> hasta cuándo ignorarlo; puntos donde se atascó
   const hornAt = new Map(), hornBad = new Set(), awake = new Set(); let hornNear = 0, hsLogAt = 0; // cabezas con cuernos vistas / descartadas
-  let capture = null, captures = 0, allies = 0, lastCaught = '', portalSeen = false, portalGo = false, stayAt = 0, calmAt = 0; // captura en curso, contadores, ¿se vio el portal?, ¿ya decidió irse?, desde cuándo se queda, última vez sin horda encima
+  let giftSaid = false, zoneAt = Date.now(), beastPrev = null, beastVel = [0, 0], beastLog = 0, crystalLog = 0, safeLog = 0, capture = null, captures = 0, allies = 0, lastCaught = '', portalSeen = false, portalGo = false, stayAt = 0, calmAt = 0; // captura en curso, contadores, ¿se vio el portal?, ¿ya decidió irse?, desde cuándo se queda, última vez sin horda encima
   let escapeUntil = 0, escapeKeys = [], side = false, prog = {}, cardsAt = 0, fusionSkipUntil = 0, lastReroll = 0, fusionAt = null, guardianAt = null, portalAt = null, guardianWoken = false, exitTries = 0, exitAt = 0, wokeAt = 0, wakePos = null, bossSeen = false, zone = '', lastHp = 1, hpAt = 0, lastDash = 0;
   const SKIP = /maldit|tienda|desafío|dojo|hypno|olvid|ditto|grito de/i; // "Grito de X": guardián más fuerte, no // avisos que no se aceptan
   while (true) {
@@ -329,7 +360,7 @@ async function playOne(page, n) {
       }
       // NPC por especie (los enemigos también empiezan quietos, así que no sirve detectarlos por movimiento)
       // NPC despertados (p. ej. Snorlax) pasan a ser enemigos: dejan de ser 'inofensivos'
-      st.enemies = st.sprites.filter(s => !NPC.has(s[2]) || awake.has(s[2])); // el propio jugador ya no está en sprites
+      st.enemies = st.sprites.filter(s => (!NPC.has(s[2]) || awake.has(s[2])) && !BEASTS.has(s[2])); // la bestia no hace daño: no esquivarla // el propio jugador ya no está en sprites
       // jefe: el enemigo más grande si es claramente mayor que la media (el guardián es enorme)
       const sizes = st.enemies.map(e => e[3] || 1).sort((a, b) => a - b), med = sizes[sizes.length >> 1] || 1;
       const big = st.enemies.reduce((b, e) => (e[3] || 1) > (b?.[3] || 0) ? e : b, null);
@@ -342,7 +373,7 @@ async function playOne(page, n) {
       const key = t => t.kind + Math.round(t.x / 10) + ',' + Math.round(t.z / 10); // bloques de 10: un NPC que se balancea sigue siendo el mismo
       // recordar dónde está el fusionador (lejos puede dejar de dibujarse) para volver cuando haya 2 MAX
       // zona nueva (tras el portal): olvidar todo lo memorizado del mapa anterior
-      if (st.zone && st.zone !== zone) { if (zone) console.log('zona nueva:', st.zone); zone = st.zone; portalSeen = portalGo = false; stayAt = 0; visited.clear(); walls.length = 0; fusionAt = guardianAt = portalAt = null; guardianWoken = false; hornAt.clear(); hornBad.clear(); awake.clear(); }
+      if (st.zone && st.zone !== zone) { if (zone) console.log('zona nueva:', st.zone); zone = st.zone; zoneAt = Date.now(); portalSeen = portalGo = false; stayAt = 0; visited.clear(); walls.length = 0; fusionAt = guardianAt = portalAt = null; guardianWoken = false; hornAt.clear(); hornBad.clear(); awake.clear(); }
       // el guardián se localiza por su aviso al pasar cerca; a falta de 40 s se va a despertarlo (y matarlo -> portal)
       if (/guardián/i.test(st.prompt) && !guardianAt) guardianAt = { kind: 'guardian', x: st.player[0], z: st.player[1] }, console.log('guardián en', st.player.map(Math.round).join(','), 'mallas cerca:', st.nearNames.join(' '));
       // flecha del HUD -> punto del mundo (dirección en pantalla + distancia "37 m"); se memoriza por si la flecha desaparece al acercarse
@@ -352,7 +383,7 @@ async function playOne(page, n) {
       const cm = c?.k.match(/^m(\d+)#5af0ff/);
       if (cm) capture = { id: cm[1], ...compassPoint(st.player, st.fwd, c), at: Date.now() };
       if (capture && Date.now() - capture.at > 10000) capture = null;
-      const sanct = /Santuario/.test(st.zone);
+      const sanct = !!st.zone && !/^Zona|Grieta/.test(st.zone); // cada mapa nombra distinto a su santuario
       if (capture && (!guardianWoken || sanct)) { // un legendario variocolor debilitado espera su Poké Ball: sin eso, en el Santuario no se sale
         const d = s => Math.hypot(s[0] - capture.x, s[1] - capture.z);
         const s = st.sprites.filter(q => q[2] === capture.id).sort((a, b) => d(a) - d(b))[0];
@@ -373,7 +404,7 @@ async function playOne(page, n) {
         const k = Math.round(ab.x / 10) + ',' + Math.round(ab.z / 10);
         if (!hornAt.has(k)) hornAt.set(k, { kind: 'guardian', x: ab.x, z: ab.z, k }), console.log('altar del guardián en', Math.round(ab.x), Math.round(ab.z));
       }
-      if (/Santuario/.test(st.zone)) st.timeLeft = 0; // su reloj cuenta hacia arriba y no hay límite: ir ya a tocar el santuario
+      if (sanct) st.timeLeft = 0; // su reloj cuenta hacia arriba y no hay límite: ir ya a tocar el santuario
       // salir hacia el altar según la distancia (~3.5 u/s andando entre la horda) para llegar antes de los 40 s; despertar solo con <=40 s
       const altarD = Math.min(...[...hornAt.values()].filter(h => !hornBad.has(h.k)).map(h => Math.hypot(h.x - st.player[0], h.z - st.player[1])), 999);
       // la vida del guardián dura ~40/50/60 s de tu daño según la zona (código del juego); +20 s de margen para no acabar en el Enjambre final
@@ -397,7 +428,7 @@ async function playOne(page, n) {
       const portalNow = guardianWoken && !exitBlocked && (st.targets.find(t => t.kind === 'portal') || portalAt);
       if (st.enemies.filter(e => Math.hypot(e[0] - st.player[0], e[1] - st.player[1]) < 9).length < 120) calmAt = Date.now(); // con 100+ encima la vida aún aguantaba (Nidoran♀); manda sobre todo la vida
       if (portalNow && !stayAt) stayAt = Date.now();
-      const stay = portalNow && !portalGo && !/Santuario/.test(st.zone) && st.hp >= 0.6 && Date.now() - calmAt < 4000 && Date.now() - stayAt < 60000;
+      const stay = portalNow && !portalGo && !sanct && st.hp >= 0.6 && Date.now() - calmAt < 4000 && Date.now() - stayAt < 60000;
       if (stay && !portalSeen) console.log('guardián muerto: me quedo con vida', st.hp.toFixed(2), 'a falta de', st.timeLeft, 's');
       if (portalNow) portalSeen = true;
       if (portalNow && !stay && !portalGo) portalGo = true, console.log('me voy al portal: vida', st.hp.toFixed(2), 'horda', Date.now() - calmAt >= 4000, 'tras', Math.round((Date.now() - stayAt) / 1000), 's');
@@ -413,18 +444,34 @@ async function playOne(page, n) {
       st.walls = walls;
       DANGER = PROFILE.danger * (st.dominant ? 1.5 : guardianWoken && Date.now() - wokeAt < 30000 ? 1.4 : 1); // guardián o Dominante: más distancia
       if (st.dominant && !['portal', 'guardian'].includes(tgt?.kind)) st.target = null; // con un Dominante suelto, solo sobrevivir
+      const beast = !guardianWoken && !capture && st.hp >= 0.4 && (st.sprites.find(s => BEASTS.has(s[2])) || st.beam);
+      if (st.gift && !giftSaid) giftSaid = true, console.log('¡REGALO DE LA BESTIA!', beast?.[2] || '');
+      if (!st.gift) giftSaid = false;
+      if (beast && beastPrev && beastPrev[2] === beast[2]) { const dt = (Date.now() - beastPrev[3]) / 1000; if (dt > 0.05 && dt < 2) beastVel = [0.6 * beastVel[0] + 0.4 * (beast[0] - beastPrev[0]) / dt, 0.6 * beastVel[1] + 0.4 * (beast[1] - beastPrev[1]) / dt]; }
+      beastPrev = beast ? [beast[0], beast[1], beast[2], Date.now()] : null; if (!beast) beastVel = [0, 0];
+      const beastD = beast && Math.hypot(beast[0] - st.player[0], beast[1] - st.player[1]);
+      if (beast && beastD < 25 && Date.now() - lastUlt > 2000) await page.keyboard.press('KeyR'), lastUlt = Date.now(); // el especial es el golpe más fuerte: hace falta el 45% de su vida
+      // Ciudad Iris: la bestia sale a los 60-120 s de cada zona por un sendero de borde a borde que cruza cerca del centro: esperarla ahí
+      const beastWait = REGION === 'Ciudad Iris' && !sanct && !beast && !guardianWoken && !capture && st.hp >= 0.5 && Date.now() - zoneAt > 45000 && Date.now() - zoneAt < 150000;
+      if (beastWait && Math.hypot(...st.player) > 25) st.target = [0, 0], st.tw = 0.8;
+      if (beast) { st.target = chasePoint(st.player, beast, 9, beastVel), st.tw = 1.2; if (Date.now() - beastLog > 1500) beastLog = Date.now(), console.log('sigo a la bestia', beast[2], 'a', beastD.toFixed(0), 'vel', Math.hypot(...beastVel).toFixed(1)); }
       st.tw = (tgt?.kind === 'fusion' && st.maxCount >= 2 && st.hp >= 0.5) || (tgt?.kind === 'guardian' && st.hp >= 0.5) || tgt?.kind === 'portal' || (tgt?.kind === 'capture' && st.hp >= 0.5) ? 1.2 : tgt?.kind === 'heal' || tgt?.kind === 'capture' ? 0.4 : tgt?.kind === 'fusion' && st.hp >= 0.6 && PROFILE.name !== 'frágil' ? 0.6 : ['free', 'altar', 'paid', 'npc'].includes(tgt?.kind) && st.hp >= 0.5 ? 0.6 : 0.15; // con 1 MAX se acerca con decisión si hay vida // al fusionador empuja a través de la horda
       if (stay) st.target = orbitPoint(st.player, [portalNow.x, portalNow.z]), st.tw = 1.2; // en círculo alrededor de la salida
       // Código del juego: a más de 18 u durante 2,5 s el guardián salta encima (×1,8, su peor golpe); sus golpes apuntan a donde vas. Girar cerca, sin quedarse quieto
       const fight = guardianWoken && !portalNow && st.boss && (sanct || Math.hypot(st.boss[0] - st.player[0], st.boss[1] - st.player[1]) < 40); // más lejos no es el guardián, sino otro enemigo grande
       st.bossR = exitBlocked ? 4 : fight ? 10 : 22;
       if (fight && !tgt) st.target = orbitPoint(st.player, st.boss, exitBlocked ? 6 : 14), st.tw = st.hp >= PROFILE.lowHp ? 0.8 : 0.3; // con poca vida steer suelta el objetivo y solo esquiva
+      // cristales de Articuno: mientras queden, el jefe recibe solo el 15% del daño. shortcut: se supone que salen como sprites 144 pequeños; si no se ven, solo los rompen los ataques automáticos
+      const crystal = fight && !tgt && st.sprites.filter(s => s[2] === '144' && s[3] < 4).sort((a, b) => Math.hypot(a[0] - st.player[0], a[1] - st.player[1]) - Math.hypot(b[0] - st.player[0], b[1] - st.player[1]))[0];
+      if (crystal) { st.target = [crystal[0], crystal[1]], st.tw = 0.8; if (Date.now() - crystalLog > 5000) crystalLog = Date.now(), console.log('voy a un cristal en', crystal[0].toFixed(0), crystal[1].toFixed(0)); }
+      const safe = st.safe?.length ? safeSpot(st.player, st.safe) : null, inSafe = safe && st.safe.includes(sectorOf(...st.player));
+      if (safe) { st.target = safe, st.tw = 1.2; if (Date.now() - safeLog > 2000) safeLog = Date.now(), console.log('Frío Absoluto: sectores', st.safe.join(' '), 'estoy', inSafe ? 'a salvo' : 'fuera', 'voy a', safe.map(v => v.toFixed(0)).join(',')); }
       const near = r => st.enemies.filter(e => Math.hypot(e[0] - st.player[0], e[1] - st.player[1]) < r).length;
       // en el altar: quieto hasta que salgan las cartas, salvo poca vida o rodeado
       const charging = tgt?.kind === 'altar' && dist < 3 && st.hp >= 0.4 && near(3.5) < 6 && !(st.shots.length && st.shots.length <= 10);
       // al portal, recto: esquivar a 200+ enemigos lo alejaba de 7 a 38 unidades hasta morir (solo se rodean paredes).
       // Al altar del guardián igual si hay vida (con 100% se quedaba a 25 u un minuto); a menos de 12 u espera esquivando hasta poder despertarlo
-      const straight = stay || tgt?.kind === 'portal' || (tgt?.kind === 'guardian' && st.hp >= 0.5 && (dist > 12 || st.timeLeft <= wakeAt));
+      const straight = safe || stay || tgt?.kind === 'portal' || (tgt?.kind === 'guardian' && st.hp >= 0.5 && (dist > 12 || st.timeLeft <= wakeAt));
       let want = charging ? [] : steer(straight ? { ...st, enemies: [], shots: [], boss: null } : st, Date.now());
       // golpe fuerte (-6% vida en <0.5 s): dash en perpendicular a la dirección actual para salir de la ráfaga
       if (!straight && st.hp < lastHp - 0.06 && Date.now() - lastDash > 1200) {
@@ -436,7 +483,7 @@ async function playOne(page, n) {
       if (Date.now() - hpAt > 500) lastHp = st.hp, hpAt = Date.now();
       if (escapeUntil > Date.now()) want = escapeKeys;
       held = await setKeys(page, held, want);
-      if ((fight || (tgt?.kind === 'portal' && dist > 3)) && want.length && Date.now() - lastDash > 1200) await page.keyboard.press('ShiftLeft'), lastDash = Date.now(); // al portal a toda prisa; en la pelea, deslizarse esquiva los golpes marcados en el suelo
+      if (!inSafe && (fight || safe || (tgt?.kind === 'portal' && dist > 3)) && want.length && Date.now() - lastDash > 1200) await page.keyboard.press('ShiftLeft'), lastDash = Date.now(); // al portal a toda prisa; en la pelea, deslizarse esquiva los golpes marcados en el suelo
       const crowd = near(DANGER);
       // especial contra hordas, o si pierde mucha vida rápido aunque no vea la horda (Diglett bajo tierra); en recarga no pasa nada
       // especial: se guarda mientras va al guardián (salvo apuro) y se usa en cuanto esté lista los primeros 30 s de la pelea
@@ -553,7 +600,7 @@ if (require.main === module) (async () => {
         const name = process.env.BOT_POKEMON;
         await page.locator('input[placeholder*="uscar"]').first().fill(name).catch(() => console.log('no encuentro el buscador de la Liga'));
         await page.waitForTimeout(800);
-        await page.getByText(name, { exact: true }).last().click({ timeout: 3000 }).catch(() => console.log('no encuentro', name, 'en la Liga'));
+        await page.getByText(name, { exact: true }).last().click({ timeout: 15000 }).catch(() => console.log('no encuentro', name, 'en la Liga'));
         await page.waitForTimeout(1000);
       }
       const ev = evaluate(await page.evaluate(() => document.body.innerText)); // Liga: evaluar al Pokémon seleccionado
@@ -567,7 +614,13 @@ if (require.main === module) (async () => {
       console.log(`Pokémon: ${ev.pokemon} · rol ${ev.role || '?'} · PS máx ${ev.hpMax || '?'} · armadura ${ev.armor || '?'} -> perfil ${ev.name} (radio ${ev.danger}, huir <${ev.lowHp * 100}% vida, soltar objetivo con ${ev.busyN} cerca)`);
       await page.keyboard.press('Enter'); // Liga: Pokémon seleccionado
       await page.waitForTimeout(2500); await dismiss();
-      for (const t of [REGION, 'Clásico', 'Normal']) await page.getByText(t, { exact: true }).first().click({ timeout: 5000 }).catch(() => console.log('no encuentro', t));
+      console.log('mochila activa:', (await page.$$eval('.rg-boost.on b', es => es.map(e => e.innerText))).join(', ') || 'nada');
+      for (const gen of ['Johto', 'Kanto']) if (!await page.getByText(REGION, { exact: true }).first().isVisible()) { await page.getByText(gen, { exact: true }).first().click({ timeout: 5000 }).catch(() => {}); await page.waitForTimeout(1200); } // el mapa puede estar en la otra pestaña de región
+      for (const t of [REGION, process.env.BOT_MODE || 'Clásico']) await page.getByText(t, { exact: true }).first().click({ timeout: 5000 }).catch(() => console.log('no encuentro', t));
+      // .last(): "Normal" también es el nombre de un tipo en la ficha del mapa
+      if (process.env.BOT_MODE !== 'Supervivencia') await page.getByText(process.env.BOT_DIFF || 'Normal', { exact: true }).last().click({ timeout: 5000 }).catch(() => console.log('no encuentro', process.env.BOT_DIFF || 'Normal'));
+      await page.waitForTimeout(500);
+      await page.screenshot({ path: path.join(__dirname, 'dumps', 'inicio.png') }).catch(() => {});
       for (let i = 0; i < 4 && !await page.locator('.timer').isVisible().catch(() => false); i++) { await page.waitForTimeout(1500); await page.keyboard.press('Enter'); await page.waitForTimeout(1500); }
     }
     else { await page.keyboard.press('Enter'); } // "Otra vez" en la pantalla de muerte
@@ -577,4 +630,4 @@ if (require.main === module) (async () => {
   await app.close();
 })();
 
-module.exports = { steer, scoreCard, pickTarget, compassPoint, evaluate, orbitPoint };
+module.exports = { steer, scoreCard, pickTarget, compassPoint, evaluate, orbitPoint, safeSpot, sectorOf, chasePoint };
