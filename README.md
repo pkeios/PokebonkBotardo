@@ -2,27 +2,47 @@
 
 Bot que juega solo a [PokéBonk](https://pokebonk.com), un survivor 3D de navegador. Abre la app de escritorio del juego con Playwright, lee el estado de la partida desde la página y responde con teclado: esquiva, junta objetos, sube de nivel, fusiona ataques, captura Pokémon, pelea con los guardianes y cruza portales. Cada partida queda registrada en un CSV para comparar Pokémon y builds.
 
-Se probó sobre todo en **Bosque Verde, modo Clásico, dificultad Normal**, y algo en Desierto Rocoso y Costa Tormenta, donde ganó 2 de 3 partidas con Zapdos. Glaciar Celeste se puede elegir, pero no está probado.
+Ganó en los 8 mapas disponibles (Kanto y Johto) en modo Clásico. En Ciudad Iris también ganó en Difícil y Pesadilla con Raikou. Solo se probó en Windows.
 
 > **Antes de usarlo:** las partidas cuentan en el ranking de la cuenta con la que juegues. Revisá las reglas del juego y usá una cuenta propia. El bot no resuelve captchas: si aparece uno, lo tiene que marcar una persona.
 
 ## Instalación
 
-Hace falta Node.js 20.12 o superior y la app de escritorio de PokéBonk instalada.
+Necesitás:
+
+- Windows con la app de escritorio de PokéBonk instalada. El bot la busca en `%LOCALAPPDATA%\Programs\PokeBonk\PokeBonk.exe`.
+- [Node.js](https://nodejs.org) 20.12 o superior.
+- [Git for Windows](https://git-scm.com/download/win), que trae Git Bash. Hace falta para los scripts `.sh` y para los ejemplos de este README.
+
+En una terminal:
 
 ```sh
-git clone <url-del-repo>
-cd <carpeta-del-repo>
+git clone https://github.com/pkeios/PokebonkBotardo.git
+cd PokebonkBotardo
 npm install
 mkdir dumps
 ```
 
-Para que el bot inicie sesión solo, creá un archivo `.env` en la raíz. Es opcional; sin él, iniciás sesión a mano en la app.
+## Primer arranque
+
+1. Abrí la app de PokéBonk a mano, e iniciá sesión. El bot usa la sesión que guarda la app.
+2. **Cerrá la app.** Solo admite una ventana: con la app abierta, el bot no arranca.
+3. Probá con una partida:
+
+   ```sh
+   node bot.js
+   ```
+
+   El bot abre la app, elige Bosque Verde en Normal con el Pokémon que tengas seleccionado, juega y cierra la app al terminar. En la consola se ve el resultado de cada partida.
+
+Si la sesión caduca, el bot puede volver a entrar solo. Para eso creá un archivo `.env` en la raíz del repo:
 
 ```
 PB_USER=tu_usuario
 PB_PASS=tu_contraseña
 ```
+
+Si sale un captcha, el bot muestra la ventana y espera a que lo marques vos.
 
 `.env`, `profile/` (cookies y sesión), `dumps/` y `runs.csv` están en `.gitignore`. **No los subas nunca:** los dos primeros dan acceso a tu cuenta.
 
@@ -31,21 +51,35 @@ PB_PASS=tu_contraseña
 ```sh
 node bot.js            # una partida
 node bot.js 5          # cinco partidas seguidas
-node bot.test.js       # tests de la lógica
+node bot.test.js       # tests de la lógica, sin abrir el juego
 ```
 
-La configuración se pasa por variables de entorno:
+Para elegir mapa, Pokémon, etc., usá variables de entorno. Cómo se escriben depende de la terminal:
+
+```sh
+# Git Bash
+BOT_REGION="Costa Tormenta" BOT_POKEMON=Zapdos node bot.js 3
+```
+
+```powershell
+# PowerShell (las variables quedan puestas hasta cerrar la ventana)
+$env:BOT_REGION = "Costa Tormenta"; $env:BOT_POKEMON = "Zapdos"; node bot.js 3
+```
+
+**Para frenarlo**, apretá `Ctrl+C` en la terminal y cerrá la app si quedó abierta (`taskkill /F /IM PokeBonk.exe`). Si corrías con `BOT_HIDE=1` y lo cortaste a mitad de partida, la app puede volver a abrirse fuera de la pantalla. En ese caso, con la app cerrada, abrí `%APPDATA%\PokéBonk\window.json` y cambiá `"x":-20000,"y":0` por una posición en pantalla, p. ej. `"x":100,"y":100`.
+
+Variables:
 
 | Variable | Valores | Qué hace |
 |---|---|---|
 | `BOT_POKEMON` | Nombre exacto, p. ej. `Onix` | Lo elige en la Liga. Si no logra seleccionarlo, no juega y termina con error. |
-| `BOT_REGION` | `Bosque Verde` (por defecto), `Desierto Rocoso`, `Costa Tormenta`, `Glaciar Celeste`, `Isla Canela`, `Cueva Celeste`, `Bosque Encina`... | Mapa, si ya está desbloqueado. |
+| `BOT_REGION` | `Bosque Verde` (por defecto), `Desierto Rocoso`, `Costa Tormenta`, `Glaciar Celeste`, `Isla Canela`, `Cueva Celeste`, `Bosque Encina`, `Ciudad Iris` | Mapa, si ya está desbloqueado. |
 | `BOT_MODE` | `Clásico` (por defecto), `Supervivencia` | Modo de juego. |
 | `BOT_DIFF` | `Normal` (por defecto), `Difícil`, `Pesadilla` | Dificultad, si ya está desbloqueada. |
 | `BOT_BUILD` | `dmg`, `area`, `crit`, `rango`, `exp` | Qué mejoras priorizar en las cartas (`rango`: daño, alcance y velocidad de ataque; `exp`: experiencia antes que mejorar ataques). Vacío: equilibrado. |
 | `BOT_PROFILE` | `normal`, `tanque`, `frágil` | Fuerza el estilo de juego en vez de deducirlo de las estadísticas. |
 | `DEBUG` | `1` | Muestra el detalle por consola. Las pausas desconocidas guardan siempre una captura en `dumps/`. |
-| `BOT_APP` | Ruta a `PokeBonk.exe` | Solo si la app no está en `%LOCALAPPDATA%ProgramsPokeBonk`. |
+| `BOT_APP` | Ruta a `PokeBonk.exe` | Solo si la app no está en `%LOCALAPPDATA%\Programs\PokeBonk`. |
 | `BOT_HIDE` | `1` | Juega con la ventana fuera de la pantalla y sin icono en la barra de tareas. Puede verse un instante al abrir. |
 
 Ejemplo:
@@ -114,6 +148,8 @@ El juego no ofrece una API, así que el bot lee la página:
 Estos datos salen de observar el juego y **pueden cambiar con cada actualización**. Ya pasó: si el texto de una pantalla cambia, el bot deja de reconocerla y los logs muestran `pausa sin reconocer`.
 
 ## Comparar Pokémon y builds
+
+Estos scripts se corren desde Git Bash:
 
 ```sh
 node tools/roster.js   # guarda en dumps/roster.txt los Pokémon de tu Liga
